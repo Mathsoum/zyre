@@ -26,9 +26,8 @@
 
 struct _zyre_election_t {
     char *caw;              //  Current active wave
-    zyre_peer_t *father;    //  Father in the current active wave
-    unsigned int erec;      //  Number of received election messages
-    unsigned int lrec;      //  Number of received leader messages
+    zlist_t *erec;          //  List of peers whose election message is received
+    zlist_t *lrec;          //  List of peers whose leader message is received
     bool isLeader;          //  True if leader else false
 
     char *leader;           //  Leader identity
@@ -45,9 +44,12 @@ zyre_election_new ()
     assert (self);
     //  Initialize class properties here
     self->caw = NULL;
-    self->father = NULL;
-    self->erec = 0;
-    self->lrec = 0;
+    self->erec = zlist_new ();
+    zlist_autofree (self->erec);
+    zlist_comparefn (self->erec, strcmp);
+    self->lrec = zlist_new ();
+    zlist_autofree (self->lrec);
+    zlist_comparefn (self->lrec, strcmp);
     self->isLeader = false;
 
     self->leader = NULL;
@@ -64,6 +66,8 @@ zyre_election_destroy (zyre_election_t **self_p)
     assert (self_p);
     if (*self_p) {
         zyre_election_t *self = *self_p;
+        zlist_destroy (&self->lrec);
+        zlist_destroy (&self->erec);
         //  Free class properties here
         zstr_free (&self->caw);
         zstr_free (&self->leader);
@@ -81,6 +85,12 @@ zyre_election_challenger_superior (zyre_election_t *self, const char *r) {
     return !self->caw || strcmp (r, self->caw) < 0;
 }
 
+bool
+zyre_election_challenger_inferior (zyre_election_t *self, const char *r) {
+    assert (self);
+    assert (r);
+    return !self->caw || strcmp (r, self->caw) > 0;
+}
 
 void
 zyre_election_reset (zyre_election_t *self)
@@ -88,9 +98,15 @@ zyre_election_reset (zyre_election_t *self)
     assert (self);
     zstr_free (&self->caw);     //  Free caw when re-initiated
     zstr_free (&self->leader);  //  Free leader when re-initiated
-    self->father = NULL;        //  Reset father when re-initiated
-    self->erec = 0;
-    self->lrec = 0;
+    zlist_destroy (&self->erec);
+    self->erec = zlist_new ();
+    zlist_comparefn (self->erec, strcmp);
+    zlist_autofree (self->erec);
+    zlist_destroy (&self->lrec);
+    self->lrec = zlist_new ();
+    zlist_comparefn (self->lrec, strcmp);
+    zlist_autofree (self->lrec);
+    self->leader = NULL;
 }
 
 
@@ -99,22 +115,6 @@ zyre_election_set_caw (zyre_election_t *self, char *caw)
 {
     assert (self);
     self->caw = caw;
-}
-
-
-void
-zyre_election_set_father (zyre_election_t *self, zyre_peer_t *father)
-{
-    assert (self);
-    self->father = father;
-}
-
-
-zyre_peer_t *
-zyre_election_father (zyre_election_t *self)
-{
-    assert (self);
-    return self->father;
 }
 
 
@@ -160,18 +160,27 @@ zyre_election_caw (zyre_election_t *self)
 
 
 void
-zyre_election_increment_erec (zyre_election_t *self)
+zyre_election_append_erec (zyre_election_t *self, char *peer)
 {
     assert (self);
-    self->erec++;
+    assert(peer);
+    zlist_append (self->erec, peer);
 }
 
 
 void
-zyre_election_increment_lrec (zyre_election_t *self)
+zyre_election_append_lrec (zyre_election_t *self, char *peer)
 {
     assert (self);
-    self->lrec++;
+    assert(peer);
+    zlist_append (self->lrec, peer);
+}
+
+bool
+zyre_election_erec_exists (zyre_election_t *self, char *peer)
+{
+    assert (self);
+    return zlist_exists (self->erec, peer);
 }
 
 
@@ -180,17 +189,16 @@ zyre_election_erec_complete (zyre_election_t *self, zyre_group_t *group)
 {
     assert (self);
     zlist_t *neighbors = zyre_group_peers (group);
-    bool complete = self->erec == zlist_size (neighbors);
+    bool complete = zlist_size (self->erec) == zlist_size (neighbors);
     zlist_destroy (&neighbors);
     return complete;
 }
-
 
 bool
 zyre_election_lrec_started (zyre_election_t *self)
 {
     assert (self);
-    return self->lrec > 0;
+    return zlist_size (self->lrec) > 0;
 }
 
 
@@ -199,7 +207,7 @@ zyre_election_lrec_complete (zyre_election_t *self, zyre_group_t *group)
 {
     assert (self);
     zlist_t *neighbors = zyre_group_peers (group);
-    bool complete = self->lrec == zlist_size (neighbors);
+    bool complete = zlist_size (self->lrec) == zlist_size (neighbors);
     zlist_destroy (&neighbors);
     return complete;
 }
@@ -245,7 +253,7 @@ bool
 zyre_election_finished (zyre_election_t *self)
 {
     assert (self);
-    return !self->caw && self->leader;
+    return self->leader != NULL;
 }
 
 
@@ -255,10 +263,9 @@ zyre_election_finished (zyre_election_t *self)
 void
 zyre_election_print (zyre_election_t *self) {
     printf ("zyre_election : {\n");
-    printf ("    father: %s\n", zyre_peer_name (self->father));
     printf ("    CAW: %s\n", self->caw);
-    printf ("    election count: %d\n", self->erec);
-    printf ("    leader count: %d\n", self->lrec);
+    printf ("    election count: %d\n", zlist_size (self->erec));
+    printf ("    leader count: %d\n", zlist_size (self->lrec));
     printf ("    state: %s\n", !self->leader? "undecided": self->isLeader? "leader": "loser");
     printf ("    leader: %s\n", self->leader);
     printf ("}\n");

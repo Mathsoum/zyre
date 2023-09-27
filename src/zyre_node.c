@@ -1271,60 +1271,93 @@ zyre_node_recv_peer (zyre_node_t *self)
         zyre_election_t *election = zyre_group_require_election (group);
         const char *challenger = zre_msg_challenger_id (msg);
 
-        if (zyre_election_challenger_superior (election, challenger)) {
-            //  Initiate or re-initiate leader election
-            zyre_election_reset (election);
-            zyre_election_set_caw (election, strdup (challenger));
-            zyre_election_set_father (election, peer);
+        //  Only if the challenger is alive
+        zlist_t *peer_attendees = zyre_group_peers (group);
+        zlist_comparefn (peer_attendees, strcmp);
+        if (zlist_exists (peer_attendees, challenger) || streq (challenger, zuuid_str (self->uuid))) {
 
-            zre_msg_t *election_msg = zyre_election_build_elect_msg (election);
-            zre_msg_set_group (election_msg, zre_msg_group (msg));
+            if (zyre_election_challenger_superior (election, challenger)) {
+                //  Initiate or re-initiate leader election
+                zyre_election_reset (election);
+                zyre_election_set_caw (election, strdup (challenger));
 
-            //  Send election message to all neighbors but emitting peer (also new father)
-            zlist_t *group_peers = zyre_group_peers (group);
-            char *group_peer = (char *) zlist_first (group_peers);
-            while (group_peer) {
-                if (strneq (group_peer, zyre_peer_identity (peer))) {
-                    zyre_peer_t *receiver = (zyre_peer_t *) zhash_lookup (self->peers, group_peer);
-                    zre_msg_t *election_msg_dup = zre_msg_dup (election_msg);
-                    zyre_peer_send (receiver, &election_msg_dup);
+                zre_msg_t *election_msg = zyre_election_build_elect_msg (election);
+                zre_msg_set_group (election_msg, zre_msg_group (msg));
+
+                //  Send election message to all neighbors but caw
+                zlist_t *group_peers = zyre_group_peers (group);
+                char *group_peer = (char *) zlist_first (group_peers);
+                while (group_peer) {
+                    if (strneq (group_peer, zyre_election_caw (election))) {
+                        zyre_peer_t *receiver = (zyre_peer_t *) zhash_lookup (self->peers, group_peer);
+                        zre_msg_t *election_msg_dup = zre_msg_dup (election_msg);
+                        zyre_peer_send (receiver, &election_msg_dup);
+                    }
+                    group_peer = (char *) zlist_next (group_peers);
                 }
-                group_peer = (char *) zlist_next (group_peers);
+                zlist_destroy (&group_peers);
+                zre_msg_destroy (&election_msg);
+                if (self->verbose)
+                    zsys_info ("(%s) [%s] support challenger - %s",
+                               self->name, zre_msg_group (msg), challenger);
             }
-            zlist_destroy (&group_peers);
-            zre_msg_destroy (&election_msg);
-            if (self->verbose)
-                zsys_info ("(%s) [%s] support challenger - %s",
-                           self->name, zre_msg_group (msg), challenger);
-        }
 
-        //  Support the challenger by participating in its current active wave
-        if (zyre_election_supporting_challenger (election, challenger)) {
-            zyre_election_increment_erec (election);
-            if (zyre_election_erec_complete (election, group)) {
-                if (streq (zyre_election_caw (election), zuuid_str (self->uuid))) {
-                    zre_msg_t *leader_msg = zyre_election_build_leader_msg (election);
-                    zre_msg_set_group (leader_msg, zre_msg_group (msg));
+            else
+            if (zyre_election_challenger_inferior (election, challenger) && streq (challenger, zyre_peer_identity (peer))) {
+                // A peer is delayed, we send our challenger
+                zre_msg_t *election_msg = zyre_election_build_elect_msg (election);
+                zre_msg_set_group (election_msg, zre_msg_group (msg));
+                zyre_peer_send (peer, &election_msg);
+                if (self->verbose)
+                    zsys_info ("(%s) [%s] delayed peer : sending our challenger - %s",
+                               self->name, zre_msg_group (msg), zyre_election_caw (election));
+            }
 
-                    //  Send leader message to all neighbors
-                    zyre_group_send (group, &leader_msg);
-                    if (self->verbose)
-                        zsys_info ("(%s) [%s] LEADER decision - %s",
-                                   self->name, zre_msg_group (msg), zuuid_str (self->uuid));
-                }
-                else {
-                    zre_msg_t *election_msg = zyre_election_build_elect_msg (election);
-                    zre_msg_set_group (election_msg, zre_msg_group (msg));
+            //  Support the challenger by participating in its current active wave
+            if (zyre_election_supporting_challenger (election, challenger) && !zyre_election_erec_complete (election, group)) {
+                if (!zyre_election_erec_exists(election, zyre_peer_identity (peer)))
+                    zyre_election_append_erec(election, zyre_peer_identity (peer));
+                if (zyre_election_erec_complete (election, group)) {
+                    if (streq (zyre_election_caw (election), zuuid_str (self->uuid))) {
+                        zre_msg_t *leader_msg = zyre_election_build_leader_msg (election);
+                        zre_msg_set_group (leader_msg, zre_msg_group (msg));
 
-                    //  Send election message to father
-                    zyre_peer_send (zyre_election_father (election), &election_msg);
-                    if (self->verbose)
-                        zsys_info ("(%s) [%s] Echo wave to father - %s",
-                                   self->name, zre_msg_group (msg), challenger);
+                        //  Send leader message to all neighbors
+                        zyre_group_send (group, &leader_msg);
+                        if (self->verbose)
+                            zsys_info ("(%s) [%s] LEADER decision - %s",
+                                       self->name, zre_msg_group (msg), zuuid_str (self->uuid));
+                    }
+                    else {
+                        zre_msg_t *election_msg = zyre_election_build_elect_msg (election);
+                        zre_msg_set_group (election_msg, zre_msg_group (msg));
+
+                        //  Send election message to caw
+                        zlist_t *group_peers = zyre_group_peers (group);
+                        char *group_peer = (char *) zlist_first (group_peers);
+                        while (group_peer) {
+                            if (streq (group_peer, zyre_election_caw (election))) {
+                                zyre_peer_t *receiver = (zyre_peer_t *) zhash_lookup (self->peers, group_peer);
+                                if (receiver)
+                                    zyre_peer_send (receiver, &election_msg);
+                                break;
+                            }
+                            group_peer = (char *) zlist_next (group_peers);
+                        }
+                        if (election_msg)
+                            zre_msg_destroy (&election_msg);
+                        zlist_destroy (&group_peers);
+
+                        if (self->verbose)
+                            zsys_info ("(%s) [%s] Echo wave to caw - %s",
+                                       self->name, zre_msg_group (msg), challenger);
+                    }
                 }
             }
+            //  If challenger is unworthy the message is ignored!
         }
-        //  If challenger is unworthy the message is ignored!
+        zlist_destroy (&peer_attendees);
+        // If challenger is not alive the message is ignored!
     }
     else
     if (zre_msg_id (msg) == ZRE_MSG_LEADER) {
@@ -1346,7 +1379,7 @@ zyre_node_recv_peer (zyre_node_t *self)
                     zsys_info ("(%s) [%s] Propagate LEADER - %s\n",
                                self->name, zre_msg_group (msg), zuuid_str (self->uuid));
             }
-            zyre_election_increment_lrec (election);
+            zyre_election_append_lrec (election, zyre_peer_identity (peer));
             zyre_election_set_leader (election, strdup (leader));
             if (self->verbose)
                 zsys_info ("(%s) [%s] Received LEADER - %s\n",

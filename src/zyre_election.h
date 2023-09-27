@@ -31,6 +31,9 @@ ZYRE_PRIVATE void
 ZYRE_PRIVATE bool
     zyre_election_challenger_superior (zyre_election_t *self, const char *r);
 
+ZYRE_PRIVATE bool
+    zyre_election_challenger_inferior (zyre_election_t *self, const char *r);
+
 ZYRE_PRIVATE void
     zyre_election_reset (zyre_election_t *self);
 
@@ -39,12 +42,6 @@ ZYRE_PRIVATE const char *
 
 ZYRE_PRIVATE void
     zyre_election_set_caw (zyre_election_t *self, char *caw);
-
-ZYRE_PRIVATE zyre_peer_t *
-    zyre_election_father (zyre_election_t *self);
-
-ZYRE_PRIVATE void
-    zyre_election_set_father (zyre_election_t *self, zyre_peer_t *father);
 
 ZYRE_PRIVATE zre_msg_t *
     zyre_election_build_elect_msg (zyre_election_t *self);
@@ -56,10 +53,13 @@ ZYRE_PRIVATE bool
     zyre_election_supporting_challenger (zyre_election_t *self, const char *r);
 
 ZYRE_PRIVATE void
-    zyre_election_increment_erec (zyre_election_t *self);
+    zyre_election_append_erec (zyre_election_t *self, char *peer);
 
 ZYRE_PRIVATE void
-    zyre_election_increment_lrec (zyre_election_t *self);
+    zyre_election_append_lrec (zyre_election_t *self, char *peer);
+
+ZYRE_PRIVATE bool
+    zyre_election_erec_exists (zyre_election_t *self, char *peer);
 
 ZYRE_PRIVATE bool
     zyre_election_erec_complete (zyre_election_t *self, zyre_group_t *group);
